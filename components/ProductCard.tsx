@@ -2,14 +2,17 @@ import type { Product } from "../data/products.ts";
 import { formatPrice } from "../data/products.ts";
 import { ProductBadge } from "./Badge.tsx";
 import { StarRating } from "./StarRating.tsx";
+import { ProductVisual } from "./ProductVisual.tsx";
 import QuickAddButton from "../islands/QuickAddButton.tsx";
 
 export function ProductCard({ product }: { product: Product }) {
   return (
     <div class="group relative flex flex-col rounded-2xl bg-white border border-brand-100 overflow-hidden card-hover">
       <a href={`/products/${product.slug}`} class="block relative">
-        <div class="product-icon-tile aspect-square flex items-center justify-center text-6xl sm:text-7xl group-hover:scale-105 transition-transform duration-300">
-          {product.icon}
+        <div class="product-icon-tile aspect-square flex items-center justify-center text-6xl sm:text-7xl overflow-hidden">
+          <div class="h-full w-full flex items-center justify-center group-hover:scale-105 transition-transform duration-300">
+            <ProductVisual value={product.icon} alt={product.name} />
+          </div>
         </div>
         {product.badge && (
           <span class="absolute top-3 left-3">

@@ -1,6 +1,8 @@
 import { Head } from "fresh/runtime";
+import { page } from "fresh";
 import { define } from "../utils.ts";
-import { categories, products } from "../data/products.ts";
+import { categories } from "../data/products.ts";
+import { listFeaturedProducts } from "../lib/db.ts";
 import { CategoryCard } from "../components/CategoryCard.tsx";
 import { ProductCard } from "../components/ProductCard.tsx";
 import NewsletterForm from "../islands/NewsletterForm.tsx";
@@ -49,8 +51,15 @@ const TESTIMONIALS = [
   },
 ];
 
-export default define.page(function Home() {
-  const featuredProducts = products.filter((p) => p.featured).slice(0, 8);
+export const handler = define.handlers({
+  async GET() {
+    const featuredProducts = await listFeaturedProducts(8);
+    return page({ featuredProducts });
+  },
+});
+
+export default define.page<typeof handler>(function Home({ data }) {
+  const { featuredProducts } = data;
 
   return (
     <div>

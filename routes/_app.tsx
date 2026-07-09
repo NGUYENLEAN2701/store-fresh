@@ -1,6 +1,4 @@
 import { define } from "../utils.ts";
-import { Header } from "../components/Header.tsx";
-import { Footer } from "../components/Footer.tsx";
 
 export default define.page(function App({ Component }) {
   return (
@@ -25,11 +23,7 @@ export default define.page(function App({ Component }) {
         />
       </head>
       <body class="antialiased">
-        <Header />
-        <main>
-          <Component />
-        </main>
-        <Footer />
+        <Component />
       </body>
     </html>
   );

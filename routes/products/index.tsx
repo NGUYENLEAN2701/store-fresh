@@ -1,11 +1,21 @@
 import { Head } from "fresh/runtime";
+import { page } from "fresh";
 import { define } from "../../utils.ts";
-import { categories, type Category, products } from "../../data/products.ts";
+import { categories, type Category } from "../../data/products.ts";
+import { listProducts } from "../../lib/db.ts";
 import ProductExplorer from "../../islands/ProductExplorer.tsx";
 
 const VALID_CATEGORIES = new Set(categories.map((c) => c.id));
 
-export default define.page(function ProductsPage(ctx) {
+export const handler = define.handlers({
+  async GET() {
+    const products = await listProducts();
+    return page({ products });
+  },
+});
+
+export default define.page<typeof handler>(function ProductsPage(ctx) {
+  const { products } = ctx.data;
   const categoryParam = ctx.url.searchParams.get("category");
   const initialCategory: Category | "all" =
     categoryParam && VALID_CATEGORIES.has(categoryParam as Category)

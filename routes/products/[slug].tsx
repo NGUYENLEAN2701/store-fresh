@@ -1,19 +1,29 @@
 import { Head } from "fresh/runtime";
+import { page } from "fresh";
 import { define } from "../../utils.ts";
-import {
-  formatPrice,
-  getCategoryInfo,
-  getProductBySlug,
-  getRelatedProducts,
-} from "../../data/products.ts";
+import { formatPrice, getCategoryInfo } from "../../data/products.ts";
+import { getProductBySlug, getRelatedProducts } from "../../lib/db.ts";
 import { ProductBadge } from "../../components/Badge.tsx";
 import { StarRating } from "../../components/StarRating.tsx";
 import { ProductCard } from "../../components/ProductCard.tsx";
 import ProductGallery from "../../islands/ProductGallery.tsx";
 import ProductDetailActions from "../../islands/ProductDetailActions.tsx";
 
-export default define.page(function ProductDetailPage(ctx) {
-  const product = getProductBySlug(ctx.params.slug);
+export const handler = define.handlers({
+  async GET(ctx) {
+    const product = await getProductBySlug(ctx.params.slug);
+    if (!product) {
+      return page({ product: null, related: [] }, { status: 404 });
+    }
+    const related = await getRelatedProducts(product);
+    return page({ product, related });
+  },
+});
+
+export default define.page<typeof handler>(function ProductDetailPage(
+  { data },
+) {
+  const { product, related } = data;
 
   if (!product) {
     return (
@@ -36,7 +46,6 @@ export default define.page(function ProductDetailPage(ctx) {
   }
 
   const categoryInfo = getCategoryInfo(product.category);
-  const related = getRelatedProducts(product);
 
   return (
     <div class="max-w-7xl mx-auto px-4 sm:px-6 py-10">
@@ -61,7 +70,11 @@ export default define.page(function ProductDetailPage(ctx) {
 
       <div class="mt-6 grid lg:grid-cols-2 gap-10 lg:gap-16">
         <div>
-          <ProductGallery icon={product.icon} gallery={product.gallery} />
+          <ProductGallery
+            icon={product.icon}
+            gallery={product.gallery}
+            name={product.name}
+          />
         </div>
 
         <div>

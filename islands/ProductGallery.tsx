@@ -1,18 +1,23 @@
 import { useState } from "preact/hooks";
+import { ProductVisual } from "../components/ProductVisual.tsx";
 
 interface ProductGalleryProps {
   icon: string;
   gallery: string[];
+  name: string;
 }
 
-export default function ProductGallery({ icon, gallery }: ProductGalleryProps) {
+export default function ProductGallery(
+  { icon, gallery, name }: ProductGalleryProps,
+) {
   const [active, setActive] = useState(0);
-  const images = gallery.length > 0 ? gallery : [icon];
+  const rest = gallery.filter((g) => g !== icon);
+  const images = [icon, ...rest];
 
   return (
     <div>
-      <div class="product-icon-tile rounded-3xl aspect-square flex items-center justify-center text-[7rem] sm:text-[9rem]">
-        {images[active]}
+      <div class="product-icon-tile rounded-3xl aspect-square flex items-center justify-center text-[7rem] sm:text-[9rem] overflow-hidden">
+        <ProductVisual value={images[active]} alt={name} />
       </div>
       {images.length > 1 && (
         <div class="mt-4 flex gap-3">
@@ -21,13 +26,13 @@ export default function ProductGallery({ icon, gallery }: ProductGalleryProps) {
               type="button"
               key={i}
               onClick={() => setActive(i)}
-              class={`h-16 w-16 rounded-xl flex items-center justify-center text-2xl border-2 transition-colors ${
+              class={`h-16 w-16 rounded-xl flex items-center justify-center text-2xl border-2 overflow-hidden transition-colors ${
                 i === active
                   ? "border-brand-500 bg-brand-50"
                   : "border-brand-100 bg-white hover:border-brand-300"
               }`}
             >
-              {g}
+              <ProductVisual value={g} alt={`${name} ${i + 1}`} />
             </button>
           ))}
         </div>

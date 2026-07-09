@@ -6,6 +6,7 @@ import {
   setQuantity,
 } from "../lib/cart.ts";
 import { formatPrice } from "../data/products.ts";
+import { ProductVisual } from "../components/ProductVisual.tsx";
 
 export default function CartPage() {
   const [placed, setPlaced] = useState(false);
@@ -70,9 +71,9 @@ export default function CartPage() {
             >
               <a
                 href={`/products/${line.slug}`}
-                class="product-icon-tile h-20 w-20 shrink-0 rounded-xl flex items-center justify-center text-3xl"
+                class="product-icon-tile h-20 w-20 shrink-0 rounded-xl flex items-center justify-center text-3xl overflow-hidden"
               >
-                {line.icon}
+                <ProductVisual value={line.icon} alt={line.name} />
               </a>
               <div class="flex-1 min-w-0">
                 <a
