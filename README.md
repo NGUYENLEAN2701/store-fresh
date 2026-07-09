@@ -8,33 +8,37 @@ Started" guide here: https://fresh.deno.dev/docs/getting-started
 Make sure to install Deno:
 https://docs.deno.com/runtime/getting_started/installation
 
-Copy `.env.example` to `.env` and set your MongoDB connection string:
-
-```
-cp .env.example .env
-```
-
-Then start the project in development mode:
+Start the project in development mode:
 
 ```
 deno task dev
 ```
 
-This will watch the project directory and restart as necessary.
+Seed sample products and create an admin (Deno KV, local SQLite file):
 
-### Deploy (Deno Deploy)
+```
+deno task seed
+deno task create-admin <username> <password>
+```
 
-File `.env` is not uploaded to Deno Deploy. Set the same variables in the
-project dashboard under **Settings → Environment Variables**:
+### Deploy (Deno Deploy + Deno KV)
 
-| Name | Example |
-| --- | --- |
-| `MONGODB_URI` | `mongodb+srv://user:pass@cluster.mongodb.net/?appName=Cluster0` |
-| `MONGODB_DB` | `greengear` (optional) |
+1. In Deno Deploy: **Databases** → provision a **Deno KV** instance (e.g.
+   `lean-database`) and **Assign** it to the `greengear` app (Local / main /
+   Preview as needed).
+2. Deploy the app. Code uses `await Deno.openKv()` — no `MONGODB_URI` needed.
+3. Seed production data once (from your machine, against the remote KV):
 
-Add them for both **Production** and **Preview/Development** contexts if you
-use branch previews. After saving, redeploy (or wait for the next deploy) so
-the new values are picked up.
+```
+# Create an access token in Deno Deploy, then:
+export DENO_KV_ACCESS_TOKEN=ddo_...
+export DENO_KV_URL=https://api.deno.com/v2/databases/<DATABASE_ID>/connect
+deno task seed
+deno task create-admin <username> <password>
+```
 
-Also allow your Deno Deploy egress IPs (or `0.0.0.0/0` for testing) in MongoDB
-Atlas → Network Access.
+Or create products/admins via the admin UI after creating the first admin
+locally against the remote URL.
+
+Check health: `https://<your-app>.deno.net/api/health` should return
+`"ok": true`.

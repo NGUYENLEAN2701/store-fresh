@@ -1,11 +1,11 @@
-import { ObjectId } from "mongodb";
-import { getDb } from "./db.ts";
+import { getKv } from "./kv.ts";
 
 export const SESSION_COOKIE = "admin_session";
 export const SESSION_DAYS = 7;
+const SESSION_EXPIRE_MS = SESSION_DAYS * 24 * 60 * 60 * 1000;
 
 interface AdminDoc {
-  _id: ObjectId;
+  id: string;
   username: string;
   passwordHash: string;
   createdAt: Date;
@@ -19,19 +19,16 @@ interface SessionDoc {
   expiresAt: Date;
 }
 
-async function getAdminsCollection() {
-  const db = await getDb();
-  const col = db.collection<AdminDoc>("admins");
-  await col.createIndex({ username: 1 }, { unique: true });
-  return col;
+function adminKey(id: string): Deno.KvKey {
+  return ["admins", id];
 }
 
-async function getSessionsCollection() {
-  const db = await getDb();
-  const col = db.collection<SessionDoc>("sessions");
-  await col.createIndex({ token: 1 }, { unique: true });
-  await col.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
-  return col;
+function adminUsernameKey(username: string): Deno.KvKey {
+  return ["admins_by_username", username];
+}
+
+function sessionKey(token: string): Deno.KvKey {
+  return ["sessions", token];
 }
 
 function toHex(bytes: Uint8Array): string {
@@ -103,81 +100,121 @@ export interface AdminSummary {
 
 function toSummary(doc: AdminDoc): AdminSummary {
   return {
-    id: doc._id.toHexString(),
+    id: doc.id,
     username: doc.username,
     createdAt: doc.createdAt,
   };
 }
 
 export async function listAdmins(): Promise<AdminSummary[]> {
-  const col = await getAdminsCollection();
-  const docs = await col.find().sort({ createdAt: 1 }).toArray();
+  const kv = await getKv();
+  const docs: AdminDoc[] = [];
+  const iter = kv.list<AdminDoc>({ prefix: ["admins"] });
+  for await (const entry of iter) {
+    // Skip username index entries under a different prefix; list only ["admins", id]
+    if (entry.key.length !== 2) continue;
+    docs.push(entry.value);
+  }
+  docs.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   return docs.map(toSummary);
 }
 
 export async function countAdmins(): Promise<number> {
-  const col = await getAdminsCollection();
-  return await col.countDocuments();
+  const kv = await getKv();
+  let n = 0;
+  const iter = kv.list({ prefix: ["admins"] });
+  for await (const entry of iter) {
+    if (entry.key.length === 2) n++;
+  }
+  return n;
 }
 
 export async function createAdmin(
   username: string,
   password: string,
 ): Promise<void> {
-  const col = await getAdminsCollection();
-  const existing = await col.findOne({ username });
-  if (existing) {
+  const kv = await getKv();
+  const usernameKey = adminUsernameKey(username);
+  const existing = await kv.get<string>(usernameKey);
+  if (existing.value) {
     throw new Error(`Tài khoản "${username}" đã tồn tại.`);
   }
+  const id = crypto.randomUUID();
   const passwordHash = await hashPassword(password);
-  await col.insertOne({
-    _id: new ObjectId(),
+  const doc: AdminDoc = {
+    id,
     username,
     passwordHash,
     createdAt: new Date(),
-  });
+  };
+  const result = await kv.atomic()
+    .check(existing)
+    .set(adminKey(id), doc)
+    .set(usernameKey, id)
+    .commit();
+  if (!result.ok) {
+    throw new Error(`Tài khoản "${username}" đã tồn tại.`);
+  }
 }
 
 export async function deleteAdmin(id: string): Promise<void> {
-  const col = await getAdminsCollection();
-  await col.deleteOne({ _id: new ObjectId(id) });
+  const kv = await getKv();
+  const key = adminKey(id);
+  const existing = await kv.get<AdminDoc>(key);
+  if (!existing.value) return;
+  await kv.atomic()
+    .check(existing)
+    .delete(key)
+    .delete(adminUsernameKey(existing.value.username))
+    .commit();
+  await deleteSessionsForAdmin(id);
 }
 
 export async function verifyLogin(
   username: string,
   password: string,
 ): Promise<AdminSummary | null> {
-  const col = await getAdminsCollection();
-  const doc = await col.findOne({ username });
-  if (!doc) return null;
-  const ok = await verifyPassword(password, doc.passwordHash);
+  const kv = await getKv();
+  const idRes = await kv.get<string>(adminUsernameKey(username));
+  if (!idRes.value) return null;
+  const docRes = await kv.get<AdminDoc>(adminKey(idRes.value));
+  if (!docRes.value) return null;
+  const ok = await verifyPassword(password, docRes.value.passwordHash);
   if (!ok) return null;
-  return toSummary(doc);
+  return toSummary(docRes.value);
 }
 
 export async function changePassword(
   id: string,
   newPassword: string,
 ): Promise<void> {
-  const col = await getAdminsCollection();
+  const kv = await getKv();
+  const key = adminKey(id);
+  const existing = await kv.get<AdminDoc>(key);
+  if (!existing.value) {
+    throw new Error("Không tìm thấy tài khoản admin.");
+  }
   const passwordHash = await hashPassword(newPassword);
-  await col.updateOne({ _id: new ObjectId(id) }, { $set: { passwordHash } });
+  const doc: AdminDoc = { ...existing.value, passwordHash };
+  const result = await kv.atomic().check(existing).set(key, doc).commit();
+  if (!result.ok) {
+    throw new Error("Đổi mật khẩu thất bại, vui lòng thử lại.");
+  }
 }
 
 export async function createSession(admin: AdminSummary): Promise<string> {
-  const col = await getSessionsCollection();
+  const kv = await getKv();
   const token = toHex(crypto.getRandomValues(new Uint8Array(32)));
   const now = new Date();
-  const expiresAt = new Date(
-    now.getTime() + SESSION_DAYS * 24 * 60 * 60 * 1000,
-  );
-  await col.insertOne({
+  const expiresAt = new Date(now.getTime() + SESSION_EXPIRE_MS);
+  const doc: SessionDoc = {
     token,
     adminId: admin.id,
     username: admin.username,
     createdAt: now,
     expiresAt,
-  });
+  };
+  await kv.set(sessionKey(token), doc, { expireIn: SESSION_EXPIRE_MS });
   return token;
 }
 
@@ -190,23 +227,28 @@ export async function getSessionAdmin(
   token: string | undefined,
 ): Promise<SessionAdmin | null> {
   if (!token) return null;
-  const col = await getSessionsCollection();
-  const doc = await col.findOne({ token });
-  if (!doc) return null;
-  if (doc.expiresAt.getTime() < Date.now()) {
-    await col.deleteOne({ token });
+  const kv = await getKv();
+  const res = await kv.get<SessionDoc>(sessionKey(token));
+  if (!res.value) return null;
+  if (res.value.expiresAt.getTime() < Date.now()) {
+    await kv.delete(sessionKey(token));
     return null;
   }
-  return { id: doc.adminId, username: doc.username };
+  return { id: res.value.adminId, username: res.value.username };
 }
 
 export async function deleteSession(token: string | undefined): Promise<void> {
   if (!token) return;
-  const col = await getSessionsCollection();
-  await col.deleteOne({ token });
+  const kv = await getKv();
+  await kv.delete(sessionKey(token));
 }
 
 export async function deleteSessionsForAdmin(adminId: string): Promise<void> {
-  const col = await getSessionsCollection();
-  await col.deleteMany({ adminId });
+  const kv = await getKv();
+  const iter = kv.list<SessionDoc>({ prefix: ["sessions"] });
+  for await (const entry of iter) {
+    if (entry.value.adminId === adminId) {
+      await kv.delete(entry.key);
+    }
+  }
 }

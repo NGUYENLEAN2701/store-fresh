@@ -1,42 +1,5 @@
-import { MongoClient } from "mongodb";
 import type { Category, Product } from "../data/products.ts";
-import { loadDotEnv } from "./env.ts";
-
-loadDotEnv();
-
-let client: MongoClient | null = null;
-let connectPromise: Promise<MongoClient> | null = null;
-let indexesEnsured = false;
-
-function requireMongoUri(): string {
-  const uri = Deno.env.get("MONGODB_URI");
-  if (!uri) {
-    throw new Error(
-      "Thiếu biến môi trường MONGODB_URI. " +
-        "Local: tạo file .env ở thư mục gốc dự án. " +
-        "Deno Deploy: Settings → Environment Variables (Production/Preview).",
-    );
-  }
-  return uri;
-}
-
-function getDbName(): string {
-  return Deno.env.get("MONGODB_DB") ?? "greengear";
-}
-
-function getMongoClient(): Promise<MongoClient> {
-  if (!connectPromise) {
-    client = new MongoClient(requireMongoUri());
-    connectPromise = client.connect();
-  }
-  return connectPromise;
-}
-
-/** Shared database handle for other modules (e.g. lib/auth.ts) that need their own collections. */
-export async function getDb() {
-  const c = await getMongoClient();
-  return c.db(getDbName());
-}
+import { getKv } from "./kv.ts";
 
 interface ProductDoc {
   slug: string;
@@ -57,14 +20,16 @@ interface ProductDoc {
   updatedAt: Date;
 }
 
-async function getCollection() {
-  const db = await getDb();
-  const col = db.collection<ProductDoc>("products");
-  if (!indexesEnsured) {
-    indexesEnsured = true;
-    await col.createIndex({ slug: 1 }, { unique: true });
-  }
-  return col;
+function productKey(slug: string): Deno.KvKey {
+  return ["products", slug];
+}
+
+function categoryIndexKey(category: Category, slug: string): Deno.KvKey {
+  return ["products_by_category", category, slug];
+}
+
+function featuredIndexKey(slug: string): Deno.KvKey {
+  return ["products_featured", slug];
 }
 
 function toProduct(doc: ProductDoc): Product {
@@ -87,37 +52,94 @@ function toProduct(doc: ProductDoc): Product {
   };
 }
 
+function sortByCreatedDesc(docs: ProductDoc[]): ProductDoc[] {
+  return docs.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+}
+
+function writeProductIndexes(op: Deno.AtomicOperation, doc: ProductDoc): void {
+  op.set(categoryIndexKey(doc.category, doc.slug), doc.slug);
+  if (doc.featured) {
+    op.set(featuredIndexKey(doc.slug), doc.slug);
+  }
+}
+
+function clearProductIndexes(op: Deno.AtomicOperation, doc: ProductDoc): void {
+  op.delete(categoryIndexKey(doc.category, doc.slug));
+  op.delete(featuredIndexKey(doc.slug));
+}
+
+/** Lightweight connectivity probe for Deploy diagnostics. */
+export async function pingDb(): Promise<
+  { ok: true; db: string } | { ok: false; error: string }
+> {
+  try {
+    const kv = await getKv();
+    await kv.get(["__health"]);
+    return { ok: true, db: "deno-kv" };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[kv] ping failed:", message);
+    return { ok: false, error: message };
+  }
+}
+
 export async function listProducts(
   opts: { category?: Category } = {},
 ): Promise<Product[]> {
-  const col = await getCollection();
-  const query = opts.category ? { category: opts.category } : {};
-  const docs = await col.find(query).sort({ createdAt: -1 }).toArray();
-  return docs.map(toProduct);
+  const kv = await getKv();
+  const docs: ProductDoc[] = [];
+
+  if (opts.category) {
+    const iter = kv.list<string>({
+      prefix: ["products_by_category", opts.category],
+    });
+    for await (const entry of iter) {
+      const slug = entry.value;
+      const res = await kv.get<ProductDoc>(productKey(slug));
+      if (res.value) docs.push(res.value);
+    }
+  } else {
+    const iter = kv.list<ProductDoc>({ prefix: ["products"] });
+    for await (const entry of iter) {
+      docs.push(entry.value);
+    }
+  }
+
+  return sortByCreatedDesc(docs).map(toProduct);
 }
 
 export async function listFeaturedProducts(limit = 8): Promise<Product[]> {
-  const col = await getCollection();
-  const docs = await col.find({ featured: true }).sort({ createdAt: -1 })
-    .limit(limit).toArray();
-  return docs.map(toProduct);
+  const kv = await getKv();
+  const docs: ProductDoc[] = [];
+  const iter = kv.list<string>({ prefix: ["products_featured"] });
+  for await (const entry of iter) {
+    const res = await kv.get<ProductDoc>(productKey(entry.value));
+    if (res.value) docs.push(res.value);
+  }
+  return sortByCreatedDesc(docs).slice(0, limit).map(toProduct);
 }
 
 export async function getProductBySlug(slug: string): Promise<Product | null> {
-  const col = await getCollection();
-  const doc = await col.findOne({ slug });
-  return doc ? toProduct(doc) : null;
+  const kv = await getKv();
+  const res = await kv.get<ProductDoc>(productKey(slug));
+  return res.value ? toProduct(res.value) : null;
 }
 
 export async function getRelatedProducts(
   product: Product,
   limit = 4,
 ): Promise<Product[]> {
-  const col = await getCollection();
-  const docs = await col.find({
-    category: product.category,
-    slug: { $ne: product.slug },
-  }).limit(limit).toArray();
+  const kv = await getKv();
+  const docs: ProductDoc[] = [];
+  const iter = kv.list<string>({
+    prefix: ["products_by_category", product.category],
+  });
+  for await (const entry of iter) {
+    if (entry.value === product.slug) continue;
+    const res = await kv.get<ProductDoc>(productKey(entry.value));
+    if (res.value) docs.push(res.value);
+    if (docs.length >= limit) break;
+  }
   return docs.map(toProduct);
 }
 
@@ -139,44 +161,80 @@ export interface ProductInput {
 }
 
 export async function createProduct(input: ProductInput): Promise<void> {
-  const col = await getCollection();
-  const existing = await col.findOne({ slug: input.slug });
-  if (existing) {
+  const kv = await getKv();
+  const key = productKey(input.slug);
+  const existing = await kv.get<ProductDoc>(key);
+  if (existing.value) {
     throw new Error(
       `Đường dẫn "${input.slug}" đã tồn tại, vui lòng chọn tên khác.`,
     );
   }
   const now = new Date();
-  await col.insertOne({ ...input, createdAt: now, updatedAt: now });
+  const doc: ProductDoc = { ...input, createdAt: now, updatedAt: now };
+  const op = kv.atomic().check(existing).set(key, doc);
+  writeProductIndexes(op, doc);
+  const result = await op.commit();
+  if (!result.ok) {
+    throw new Error(
+      `Đường dẫn "${input.slug}" đã tồn tại, vui lòng chọn tên khác.`,
+    );
+  }
 }
 
 export async function updateProduct(
   slug: string,
   input: ProductInput,
 ): Promise<void> {
-  const col = await getCollection();
-  await col.updateOne(
-    { slug },
-    { $set: { ...input, slug, updatedAt: new Date() } },
-  );
+  const kv = await getKv();
+  const key = productKey(slug);
+  const existing = await kv.get<ProductDoc>(key);
+  if (!existing.value) {
+    throw new Error(`Không tìm thấy sản phẩm "${slug}".`);
+  }
+  const prev = existing.value;
+  const doc: ProductDoc = {
+    ...input,
+    slug,
+    createdAt: prev.createdAt,
+    updatedAt: new Date(),
+  };
+  const op = kv.atomic().check(existing);
+  clearProductIndexes(op, prev);
+  op.set(key, doc);
+  writeProductIndexes(op, doc);
+  const result = await op.commit();
+  if (!result.ok) {
+    throw new Error("Cập nhật sản phẩm thất bại, vui lòng thử lại.");
+  }
 }
 
 export async function deleteProduct(slug: string): Promise<void> {
-  const col = await getCollection();
-  await col.deleteOne({ slug });
+  const kv = await getKv();
+  const key = productKey(slug);
+  const existing = await kv.get<ProductDoc>(key);
+  if (!existing.value) return;
+  const op = kv.atomic().check(existing);
+  clearProductIndexes(op, existing.value);
+  op.delete(key);
+  const result = await op.commit();
+  if (!result.ok) {
+    throw new Error("Xóa sản phẩm thất bại, vui lòng thử lại.");
+  }
 }
 
 export async function seedProducts(seed: ProductInput[]): Promise<number> {
-  const col = await getCollection();
+  const kv = await getKv();
   const now = new Date();
   let count = 0;
   for (const item of seed) {
-    const result = await col.updateOne(
-      { slug: item.slug },
-      { $setOnInsert: { ...item, createdAt: now, updatedAt: now } },
-      { upsert: true },
-    );
-    if (result.upsertedCount > 0) count++;
+    const key = productKey(item.slug);
+    const existing = await kv.get<ProductDoc>(key);
+    if (existing.value) continue;
+    const doc: ProductDoc = { ...item, createdAt: now, updatedAt: now };
+    const op = kv.atomic().check(existing).set(key, doc);
+    writeProductIndexes(op, doc);
+    const result = await op.commit();
+    if (result.ok) count++;
   }
   return count;
 }
