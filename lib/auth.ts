@@ -176,11 +176,15 @@ export async function verifyLogin(
 ): Promise<AdminSummary | null> {
   const kv = await getKv();
   const idRes = await kv.get<string>(adminUsernameKey(username));
-  if (!idRes.value) return null;
-  const docRes = await kv.get<AdminDoc>(adminKey(idRes.value));
-  if (!docRes.value) return null;
-  const ok = await verifyPassword(password, docRes.value.passwordHash);
-  if (!ok) return null;
+  // Dummy hash so missing-user path still runs PBKDF2 (timing equalization).
+  const DUMMY_HASH =
+    "00000000000000000000000000000000:0000000000000000000000000000000000000000000000000000000000000000";
+  const docRes = idRes.value
+    ? await kv.get<AdminDoc>(adminKey(idRes.value))
+    : null;
+  const stored = docRes?.value?.passwordHash ?? DUMMY_HASH;
+  const ok = await verifyPassword(password, stored);
+  if (!ok || !docRes?.value) return null;
   return toSummary(docRes.value);
 }
 

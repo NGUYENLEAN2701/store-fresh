@@ -14,7 +14,9 @@ Start the project in development mode:
 deno task dev
 ```
 
-Seed sample products and create an admin (Deno KV, local SQLite file):
+Seed sample products and create an admin (Deno KV, local SQLite file).
+**First admin must be created via CLI** — the login page does not allow
+public bootstrap:
 
 ```
 deno task seed
@@ -37,8 +39,9 @@ deno task seed
 deno task create-admin <username> <password>
 ```
 
-Or create products/admins via the admin UI after creating the first admin
-locally against the remote URL.
+### Security notes
 
-Check health: `https://<your-app>.deno.net/api/health` should return
-`"ok": true`.
+- Admin login is rate-limited (5 failures / 15 minutes per IP and username).
+- Login responses are timing-padded; password verify always runs PBKDF2.
+- `/api/health` returns only `{ "ok": true|false }` publicly; detailed
+  diagnostics require an admin session cookie.

@@ -47,10 +47,8 @@ export default function ErrorPage(props: PageProps) {
         </h1>
         <p class="mt-4 text-gray-600 break-words">{message}</p>
         <p class="mt-3 text-sm text-gray-500">
-          Kiểm tra Deno KV đã được assign cho app trên Deno Deploy, rồi mở{" "}
-          <a href="/api/health" class="text-brand-700 underline">
-            /api/health
-          </a>.
+          Nếu lỗi kéo dài, kiểm tra Deno KV đã được assign cho app trên Deno
+          Deploy và thử lại sau.
         </p>
         <a
           href="/"
