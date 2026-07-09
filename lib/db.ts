@@ -4,20 +4,29 @@ import { loadDotEnv } from "./env.ts";
 
 loadDotEnv();
 
-const MONGODB_URI = Deno.env.get("MONGODB_URI");
-if (!MONGODB_URI) {
-  throw new Error(
-    "Thiếu biến môi trường MONGODB_URI. Tạo file .env ở thư mục gốc dự án.",
-  );
-}
-const DB_NAME = Deno.env.get("MONGODB_DB") ?? "greengear";
-
-const client = new MongoClient(MONGODB_URI);
+let client: MongoClient | null = null;
 let connectPromise: Promise<MongoClient> | null = null;
 let indexesEnsured = false;
 
+function requireMongoUri(): string {
+  const uri = Deno.env.get("MONGODB_URI");
+  if (!uri) {
+    throw new Error(
+      "Thiếu biến môi trường MONGODB_URI. " +
+        "Local: tạo file .env ở thư mục gốc dự án. " +
+        "Deno Deploy: Settings → Environment Variables (Production/Preview).",
+    );
+  }
+  return uri;
+}
+
+function getDbName(): string {
+  return Deno.env.get("MONGODB_DB") ?? "greengear";
+}
+
 function getMongoClient(): Promise<MongoClient> {
   if (!connectPromise) {
+    client = new MongoClient(requireMongoUri());
     connectPromise = client.connect();
   }
   return connectPromise;
@@ -26,7 +35,7 @@ function getMongoClient(): Promise<MongoClient> {
 /** Shared database handle for other modules (e.g. lib/auth.ts) that need their own collections. */
 export async function getDb() {
   const c = await getMongoClient();
-  return c.db(DB_NAME);
+  return c.db(getDbName());
 }
 
 interface ProductDoc {
